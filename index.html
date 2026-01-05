@@ -18,6 +18,7 @@
     <style>
         body { 
             height: 100vh; 
+            height: -webkit-fill-available; /* 修正 iOS 工具欄高度問題 */
             display: flex; 
             flex-direction: column; 
             overflow: hidden; 
@@ -39,16 +40,23 @@
         #sidebar::-webkit-scrollbar-track { background: #f1f1f1; }
         #sidebar::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 10px; }
         
+        /* 修正 iPhone Chrome 顯示問題：改用 fixed 定位並強化 z-index */
         .gps-btn {
+            position: fixed;
+            z-index: 60; /* 高於 header 和 sidebar */
             transition: all 0.2s ease;
-            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
-            bottom: calc(2rem + env(safe-area-inset-bottom));
+            box-shadow: 0 4px 15px rgba(0,0,0,0.2);
+            bottom: calc(2.5rem + env(safe-area-inset-bottom));
             right: calc(1.5rem + env(safe-area-inset-right));
+            background: white;
+            padding: 1rem;
+            border-radius: 9999px;
+            border: 1px solid #e5e7eb;
         }
-        .gps-btn:active { transform: scale(0.9); }
+        .gps-btn:active { transform: scale(0.9); background-color: #f9fafb; }
         
         @media (max-width: 768px) {
-            #sidebar { position: absolute; left: 0; z-index: 40; height: 100%; width: 85%; transform: translateX(-100%); }
+            #sidebar { position: absolute; left: 0; z-index: 70; height: 100%; width: 85%; transform: translateX(-100%); }
             #sidebar.open { transform: translateX(0); box-shadow: 2px 0 10px rgba(0,0,0,0.1); }
         }
 
@@ -90,7 +98,7 @@
             </label>
 
             <div id="auth-section" class="hidden sm:flex flex-col items-end text-[10px] text-gray-400">
-                <p id="user-id-display" class="font-mono max-w-[150px] truncate"></p>
+                <p id="user-id-display" class="font-mono max-w-[100px] truncate"></p>
                 <div id="sync-status" class="hidden text-green-500 font-bold">● 已同步</div>
             </div>
         </div>
@@ -117,7 +125,8 @@
 
         <main id="map" class="relative"></main>
         
-        <button id="gps-btn" title="取得目前定位" class="gps-btn absolute bg-white p-4 rounded-full hover:bg-gray-50 z-30 flex items-center justify-center text-blue-600 border border-gray-100">
+        <!-- GPS 定位按鈕：改為 fixed 定位以確保 iPhone 顯示 -->
+        <button id="gps-btn" title="取得目前定位" class="gps-btn flex items-center justify-center text-blue-600">
             <svg class="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z M12 2v2 M12 20v2 M2 12h2 M20 12h2"></path>
                 <circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="2"></circle>
@@ -144,7 +153,6 @@
         let apiKey = ""; 
         const appId = typeof __app_id !== 'undefined' ? __app_id : 'parking-assistant-app';
         
-        // 修正：檢查 __firebase_config 是否存在以避免 ReferenceError
         const firebaseConfig = typeof __firebase_config !== 'undefined' 
             ? JSON.parse(__firebase_config) 
             : { apiKey: "請在 Firebase 控制台取得", authDomain: "", projectId: "", storageBucket: "", messagingSenderId: "", appId: "" };
@@ -155,7 +163,6 @@
         import { getAuth, signInWithCustomToken, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, doc, setDoc, getDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
-        // 僅在有正確設定時初始化 Firebase
         let firebaseApp, auth, db;
         try {
             if (firebaseConfig.apiKey && firebaseConfig.apiKey !== "請在 Firebase 控制台取得") {
@@ -164,7 +171,7 @@
                 db = getFirestore(firebaseApp);
             }
         } catch (e) {
-            console.warn("Firebase 初始化跳過或失敗，將無法使用雲端同步功能:", e);
+            console.warn("Firebase 初始化跳過:", e);
         }
 
         let map, autocomplete, searchService, distanceMatrixService;
@@ -175,7 +182,9 @@
         let currentPlaceId = null;
         let currentRadius = 500; 
 
-        // 1. PWA Service Worker 註冊 - 使用相對路徑
+        // 偵測是否為行動裝置
+        const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+
         if ('serviceWorker' in navigator) {
             window.addEventListener('load', () => {
                 navigator.serviceWorker.register('./sw.js').catch((err) => {
@@ -184,7 +193,6 @@
             });
         }
 
-        // 2. 身份驗證與設定同步
         const initAuth = async () => {
             if (!auth) return;
             try {
@@ -234,7 +242,6 @@
             } catch (e) { console.error("Load failed:", e); }
         }
 
-        // 3. 導覽與 Google Maps 功能
         window.openNavigation = (lat, lng, placeId) => {
             let url = `https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}`;
             if (placeId) url += `&destination_place_id=${placeId}`;
@@ -242,7 +249,6 @@
         };
 
         window.initGoogleMaps = function() {
-            console.log("Google Maps API callback triggered successfully.");
             try {
                 const mapElement = document.getElementById("map");
                 if (!mapElement) return;
@@ -260,6 +266,12 @@
                 searchService = new google.maps.places.PlacesService(map);
                 distanceMatrixService = new google.maps.DistanceMatrixService();
                 setupAutocomplete();
+                
+                // 行動裝置啟動時強制嘗試 GPS 定位
+                if (isMobile) {
+                    console.log("偵測到行動裝置，嘗試強制 GPS 定位...");
+                    setTimeout(() => window.handleGeolocation(true), 1500);
+                }
             } catch (err) {
                 console.error("Map initialization failed:", err);
                 document.getElementById('api-error-overlay').classList.remove('hidden');
@@ -267,9 +279,7 @@
         };
 
         window.gm_authFailure = function() {
-            console.error("Google Maps authentication failed.");
             document.getElementById('api-error-overlay').classList.remove('hidden');
-            document.getElementById('error-details').innerText = "API 金鑰授權失敗。請檢查 Google Cloud Console 是否允許了當前的 GitHub Pages 網域。";
         };
 
         function setupAutocomplete() {
@@ -314,20 +324,35 @@
             } catch (err) { showToast("定位失敗，請手動搜尋"); }
         }
 
-        window.handleGeolocation = function() {
-            if (!navigator.geolocation) { showToast("瀏覽器不支援定位"); return; }
-            showToast("正在獲取位置...");
+        window.handleGeolocation = function(forceGPS = false) {
+            if (!navigator.geolocation) { 
+                if (!forceGPS) getApproximateLocationByIP();
+                else showToast("瀏覽器不支援 GPS");
+                return; 
+            }
+            
+            showToast("正在獲取精確位置...");
+            
             navigator.geolocation.getCurrentPosition(
                 (position) => {
                     const pos = new google.maps.LatLng(position.coords.latitude, position.coords.longitude);
                     updateMapLocation(pos, "目前位置");
-                    showToast("定位成功");
+                    showToast("GPS 定位成功");
                 },
                 (error) => {
-                    if (error.code === 1) getApproximateLocationByIP();
-                    else showToast("無法取得 GPS 訊號");
+                    console.error(`定位錯誤 (${error.code}): ${error.message}`);
+                    // 行動裝置若失敗，顯示警告而非靜默切換
+                    if (isMobile || forceGPS) {
+                        showToast("無法獲取 GPS 訊號，請檢查定位權限");
+                    } else {
+                        getApproximateLocationByIP();
+                    }
                 },
-                { enableHighAccuracy: false, timeout: 8000, maximumAge: 0 }
+                { 
+                    enableHighAccuracy: true, // 強制使用 GPS 提高精度
+                    timeout: 10000, 
+                    maximumAge: 0 
+                }
             );
         };
 
@@ -414,10 +439,10 @@
             const msg = document.getElementById('status-message');
             msg.querySelector('span').innerText = text;
             msg.classList.remove('hidden');
-            if (!text.includes("中")) setTimeout(() => msg.classList.add('hidden'), 3000);
+            if (!text.includes("中")) setTimeout(() => msg.classList.add('hidden'), 3500);
         }
 
-        // 4. 事件監聽
+        // 事件監聽
         document.getElementById('parking-toggle').addEventListener('change', (e) => {
             saveUserSettings({ showParking: e.target.checked });
             if (e.target.checked && currentCoords) findNearbyParking(currentCoords);
@@ -436,12 +461,10 @@
 
         document.getElementById('toggle-sidebar').addEventListener('click', () => document.getElementById('sidebar').classList.toggle('open'));
         document.getElementById('close-sidebar').addEventListener('click', () => document.getElementById('sidebar').classList.remove('open'));
-        document.getElementById('gps-btn').addEventListener('click', () => window.handleGeolocation());
+        document.getElementById('gps-btn').addEventListener('click', () => window.handleGeolocation(true));
 
         window.addEventListener('load', async () => {
-            console.log("App starting on GitHub Pages...");
             await initAuth();
-            
             try {
                 if (db) {
                     const configRef = doc(db, 'artifacts', appId, 'public', 'data', 'config', 'googleMaps');
@@ -456,12 +479,11 @@
                 script.src = `https://maps.googleapis.com/maps/api/js?key=${apiKey}&libraries=places&callback=initGoogleMaps`;
                 script.async = true;
                 script.onerror = (e) => {
-                    console.error("Script failed to load:", e);
                     document.getElementById('api-error-overlay').classList.remove('hidden');
                 };
                 document.head.appendChild(script);
             } catch (error) {
-                console.error("Critical error during startup:", error);
+                console.error("Startup error:", error);
             }
         });
     </script>
