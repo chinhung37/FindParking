@@ -7,11 +7,12 @@
     
     <!-- PWA / 行動端優化標籤 -->
     <meta name="theme-color" content="#3b82f6">
+    <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="apple-mobile-web-app-title" content="停車助手">
-    <link rel="apple-touch-icon" href="icon-192.png">
-    <link rel="manifest" href="manifest.json">
+    <link rel="apple-touch-icon" href="./icon-192.png">
+    <link rel="manifest" href="./manifest.json">
 
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
@@ -89,7 +90,7 @@
             </label>
 
             <div id="auth-section" class="hidden sm:flex flex-col items-end text-[10px] text-gray-400">
-                <p id="user-id-display" class="font-mono max-w-[100px] truncate"></p>
+                <p id="user-id-display" class="font-mono max-w-[150px] truncate"></p>
                 <div id="sync-status" class="hidden text-green-500 font-bold">● 已同步</div>
             </div>
         </div>
@@ -142,16 +143,29 @@
         // 核心變數與 Firebase 初始化
         let apiKey = ""; 
         const appId = typeof __app_id !== 'undefined' ? __app_id : 'parking-assistant-app';
-        const firebaseConfig = JSON.parse(__firebase_config);
+        
+        // 修正：檢查 __firebase_config 是否存在以避免 ReferenceError
+        const firebaseConfig = typeof __firebase_config !== 'undefined' 
+            ? JSON.parse(__firebase_config) 
+            : { apiKey: "請在 Firebase 控制台取得", authDomain: "", projectId: "", storageBucket: "", messagingSenderId: "", appId: "" };
+            
         const FALLBACK_KEY = "AIzaSyDM1QYmdYllXKsxF_M7vhRodnpXfCRnVNo";
         
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInWithCustomToken, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, doc, setDoc, getDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
-        const firebaseApp = initializeApp(firebaseConfig);
-        const auth = getAuth(firebaseApp);
-        const db = getFirestore(firebaseApp);
+        // 僅在有正確設定時初始化 Firebase
+        let firebaseApp, auth, db;
+        try {
+            if (firebaseConfig.apiKey && firebaseConfig.apiKey !== "請在 Firebase 控制台取得") {
+                firebaseApp = initializeApp(firebaseConfig);
+                auth = getAuth(firebaseApp);
+                db = getFirestore(firebaseApp);
+            }
+        } catch (e) {
+            console.warn("Firebase 初始化跳過或失敗，將無法使用雲端同步功能:", e);
+        }
 
         let map, autocomplete, searchService, distanceMatrixService;
         let currentUser = null;
@@ -161,15 +175,18 @@
         let currentPlaceId = null;
         let currentRadius = 500; 
 
-        // 1. PWA Service Worker 註冊
+        // 1. PWA Service Worker 註冊 - 使用相對路徑
         if ('serviceWorker' in navigator) {
             window.addEventListener('load', () => {
-                navigator.serviceWorker.register('./sw.js').catch(() => {});
+                navigator.serviceWorker.register('./sw.js').catch((err) => {
+                    console.log("ServiceWorker 註冊失敗:", err);
+                });
             });
         }
 
         // 2. 身份驗證與設定同步
         const initAuth = async () => {
+            if (!auth) return;
             try {
                 if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
                     await signInWithCustomToken(auth, __initial_auth_token);
@@ -179,18 +196,20 @@
             } catch (error) { console.error("Auth Error:", error); }
         };
 
-        onAuthStateChanged(auth, (user) => {
-            currentUser = user;
-            if (user) {
-                const uidDisplay = document.getElementById('user-id-display');
-                if (uidDisplay) uidDisplay.innerText = `UID: ${user.uid}`;
-                document.getElementById('sync-status').classList.remove('hidden');
-                loadUserSettings();
-            }
-        });
+        if (auth) {
+            onAuthStateChanged(auth, (user) => {
+                currentUser = user;
+                if (user) {
+                    const uidDisplay = document.getElementById('user-id-display');
+                    if (uidDisplay) uidDisplay.innerText = `UID: ${user.uid}`;
+                    document.getElementById('sync-status').classList.remove('hidden');
+                    loadUserSettings();
+                }
+            });
+        }
 
         async function saveUserSettings(settings) {
-            if (!currentUser) return;
+            if (!currentUser || !db) return;
             try {
                 const settingsRef = doc(db, 'artifacts', appId, 'users', currentUser.uid, 'settings', 'config');
                 await setDoc(settingsRef, { ...settings, updatedAt: Date.now() }, { merge: true });
@@ -198,7 +217,7 @@
         }
 
         async function loadUserSettings() {
-            if (!currentUser) return;
+            if (!currentUser || !db) return;
             try {
                 const settingsRef = doc(db, 'artifacts', appId, 'users', currentUser.uid, 'settings', 'config');
                 const snap = await getDoc(settingsRef);
@@ -215,7 +234,7 @@
             } catch (e) { console.error("Load failed:", e); }
         }
 
-        // 3. 導航與 Google Maps 功能
+        // 3. 導覽與 Google Maps 功能
         window.openNavigation = (lat, lng, placeId) => {
             let url = `https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}`;
             if (placeId) url += `&destination_place_id=${placeId}`;
@@ -247,9 +266,8 @@
             }
         };
 
-        // 捕捉 API 授權失敗
         window.gm_authFailure = function() {
-            console.error("Google Maps authentication failed. Check your API Key and Referrer settings.");
+            console.error("Google Maps authentication failed.");
             document.getElementById('api-error-overlay').classList.remove('hidden');
             document.getElementById('error-details').innerText = "API 金鑰授權失敗。請檢查 Google Cloud Console 是否允許了當前的 GitHub Pages 網域。";
         };
@@ -425,11 +443,13 @@
             await initAuth();
             
             try {
-                const configRef = doc(db, 'artifacts', appId, 'public', 'data', 'config', 'googleMaps');
-                const configSnap = await getDoc(configRef);
-                apiKey = configSnap.exists() ? configSnap.data().apiKey : FALLBACK_KEY;
-                
-                console.log("API Key loaded from Firebase or Fallback.");
+                if (db) {
+                    const configRef = doc(db, 'artifacts', appId, 'public', 'data', 'config', 'googleMaps');
+                    const configSnap = await getDoc(configRef);
+                    apiKey = configSnap.exists() ? configSnap.data().apiKey : FALLBACK_KEY;
+                } else {
+                    apiKey = FALLBACK_KEY;
+                }
                 
                 const script = document.createElement('script');
                 script.setAttribute('crossorigin', 'anonymous');
