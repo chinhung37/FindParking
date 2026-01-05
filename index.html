@@ -26,7 +26,25 @@
     /* 確保 body 佔滿全螢幕但內容在安全區內 */
     min-height: 100vh;
     box-sizing: border-box;
-}
+        }
+        .navbar {
+    position: fixed;
+    top: 0;
+    width: 100%;
+    
+    /* 讓背景顏色填滿到最上方 */
+    background-color: #your-color; 
+    
+    /* 只讓內部的文字/按鈕避開危險區 */
+    padding-top: env(safe-area-inset-top); 
+    
+    /* 調整高度：原本高度 + 安全區域高度 */
+    height: calc(50px + env(safe-area-inset-top)); 
+    
+    display: flex;
+    align-items: center;
+    z-index: 1000;
+    }
         #main-container { flex: 1; display: flex; overflow: hidden; position: relative; }
         #map { flex: 1; background-color: #f3f4f6; }
         #sidebar { 
