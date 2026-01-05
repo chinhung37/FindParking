@@ -1,0 +1,431 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>Google Maps 停車場搜尋助手</title>
+    
+    <!-- PWA / 行動端優化標籤 -->
+    <meta name="theme-color" content="#3b82f6">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="停車助手">
+    <link rel="apple-touch-icon" href="icon.png">
+    <link rel="manifest" href="manifest.json">
+
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { 
+            height: 100vh; 
+            display: flex; 
+            flex-direction: column; 
+            overflow: hidden; 
+            /* 避免 iOS 橡皮筋回彈效果 */
+            position: fixed;
+            width: 100%;
+        }
+        #main-container { flex: 1; display: flex; overflow: hidden; position: relative; }
+        #map { flex: 1; background-color: #f3f4f6; }
+        #sidebar { 
+            width: 320px; 
+            background: white; 
+            border-right: 1px solid #e5e7eb; 
+            overflow-y: auto; 
+            transition: all 0.3s ease;
+        }
+        .gm-style-iw { color: #333; }
+        #status-message { transition: opacity 0.3s; pointer-events: none; }
+        #sidebar::-webkit-scrollbar { width: 4px; }
+        #sidebar::-webkit-scrollbar-track { background: #f1f1f1; }
+        #sidebar::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 10px; }
+        
+        .gps-btn {
+            transition: all 0.2s ease;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+            /* 考慮到行動端安全區域 */
+            bottom: calc(2rem + env(safe-area-inset-bottom));
+            right: calc(1.5rem + env(safe-area-inset-right));
+        }
+        .gps-btn:active { transform: scale(0.9); }
+        
+        @media (max-width: 768px) {
+            #sidebar { position: absolute; left: 0; z-index: 40; height: 100%; width: 85%; transform: translateX(-100%); }
+            #sidebar.open { transform: translateX(0); box-shadow: 2px 0 10px rgba(0,0,0,0.1); }
+        }
+
+        /* 頂部導覽列考慮 iOS 動態島/瀏海 */
+        header {
+            padding-top: calc(1rem + env(safe-area-inset-top));
+        }
+    </style>
+</head>
+<body class="bg-gray-100 font-sans text-gray-900">
+
+    <header class="bg-white shadow-md p-4 flex flex-col md:flex-row items-center justify-between gap-4 z-50">
+        <div class="flex items-center gap-4 w-full md:w-auto">
+            <button id="toggle-sidebar" class="p-2 text-gray-600 hover:bg-gray-100 rounded">
+                <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"></path></svg>
+            </button>
+            <h1 class="text-xl font-bold text-blue-600 hidden sm:block">停車助手</h1>
+            <div class="relative flex-grow max-w-md flex items-center gap-2">
+                <input id="pac-input" type="text" placeholder="搜尋目的地..." 
+                       class="w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-400">
+                <button id="nav-destination" class="hidden bg-green-500 hover:bg-green-600 text-white p-2 rounded-lg text-sm transition flex items-center gap-1 shrink-0">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"></path></svg>
+                    導航
+                </button>
+            </div>
+        </div>
+
+        <div class="flex flex-wrap items-center gap-3 md:gap-6 w-full md:w-auto justify-between">
+            <div class="flex items-center gap-2 bg-gray-50 px-3 py-1.5 rounded-lg border border-gray-200 flex-grow sm:flex-grow-0">
+                <span class="text-[10px] font-medium text-gray-600 whitespace-nowrap">範圍: <span id="radius-label" class="text-blue-600 font-bold">500</span>m</span>
+                <input type="range" id="radius-slider" min="50" max="500" step="50" value="500" 
+                       class="w-full sm:w-24 md:w-32 h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-blue-600">
+            </div>
+
+            <label class="relative inline-flex items-center cursor-pointer scale-90">
+                <input type="checkbox" id="parking-toggle" class="sr-only peer">
+                <div class="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600"></div>
+                <span class="ml-2 text-xs font-medium text-gray-700 whitespace-nowrap">附近搜尋</span>
+            </label>
+
+            <div id="auth-section" class="hidden sm:flex flex-col items-end text-[10px] text-gray-400">
+                <p id="user-id-display" class="font-mono max-w-[100px] truncate"></p>
+                <div id="sync-status" class="hidden text-green-500 font-bold">● 已同步</div>
+            </div>
+        </div>
+    </header>
+
+    <div id="main-container">
+        <aside id="sidebar">
+            <div class="p-4 border-b bg-gray-50 sticky top-0 z-10">
+                <div class="flex justify-between items-center">
+                    <h2 class="font-bold text-gray-700 flex items-center gap-2">
+                        <svg class="w-5 h-5 text-blue-500" fill="currentColor" viewBox="0 0 20 20"><path d="M10 2a8 8 0 100 16 8 8 0 000-16zm1 11H9v-2h2v2zm0-4H9V5h2v4z"></path></svg>
+                        附近停車場
+                    </h2>
+                    <button id="close-sidebar" class="md:hidden text-gray-400 p-1">✕</button>
+                </div>
+                <p id="result-count" class="text-xs text-gray-500 mt-1">請搜尋目的地</p>
+            </div>
+            <div id="parking-list" class="divide-y divide-gray-100">
+                <div class="p-8 text-center text-gray-400">
+                    <p class="text-sm">搜尋結果將顯示在此處</p>
+                </div>
+            </div>
+        </aside>
+
+        <main id="map" class="relative"></main>
+        
+        <button id="gps-btn" title="取得目前定位" class="gps-btn absolute bg-white p-4 rounded-full hover:bg-gray-50 z-30 flex items-center justify-center text-blue-600 border border-gray-100">
+            <svg class="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z M12 2v2 M12 20v2 M2 12h2 M20 12h2"></path>
+                <circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="2"></circle>
+            </svg>
+        </button>
+        
+        <div id="status-message" class="absolute bottom-24 left-1/2 -translate-x-1/2 bg-black/80 text-white px-6 py-2 rounded-full text-sm hidden z-20 shadow-xl flex items-center gap-2">
+            <svg class="animate-spin h-4 w-4 text-white" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
+            <span>搜尋中...</span>
+        </div>
+
+        <div id="api-error-overlay" class="absolute inset-0 bg-white/90 z-[60] flex items-center justify-center hidden text-center">
+            <div class="p-8 max-w-sm bg-white rounded-xl shadow-2xl border mx-4">
+                <div class="text-red-500 mb-4"><svg class="w-16 h-16 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg></div>
+                <h2 class="text-xl font-bold text-gray-800 mb-2">服務異常</h2>
+                <p class="text-sm text-gray-600 mb-6">請檢查網路連線或 GPS 定位授權。</p>
+                <button onclick="location.reload()" class="w-full bg-blue-600 text-white px-6 py-3 rounded-lg font-bold hover:bg-blue-700 transition">重新整理</button>
+            </div>
+        </div>
+    </div>
+
+    <script type="module">
+        // 核心變數與 Firebase 初始化
+        let apiKey = ""; 
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'parking-assistant-app';
+        const firebaseConfig = JSON.parse(__firebase_config);
+        const FALLBACK_KEY = "AIzaSyDM1QYmdYllXKsxF_M7vhRodnpXfCRnVNo";
+        
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInWithCustomToken, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, setDoc, getDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        const firebaseApp = initializeApp(firebaseConfig);
+        const auth = getAuth(firebaseApp);
+        const db = getFirestore(firebaseApp);
+
+        let map, autocomplete, searchService, distanceMatrixService;
+        let currentUser = null;
+        let parkingMarkers = [];
+        let destinationMarker = null;
+        let currentCoords = null;
+        let currentPlaceId = null;
+        let currentRadius = 500; 
+
+        // 1. PWA Service Worker 註冊 (提升行動端穩定性)
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => {
+                navigator.serviceWorker.register('/sw.js').catch(() => {});
+            });
+        }
+
+        // 2. 身份驗證與設定同步
+        const initAuth = async () => {
+            try {
+                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                    await signInWithCustomToken(auth, __initial_auth_token);
+                } else {
+                    await signInAnonymously(auth);
+                }
+            } catch (error) { console.error("Auth Error:", error); }
+        };
+
+        onAuthStateChanged(auth, (user) => {
+            currentUser = user;
+            if (user) {
+                const uidDisplay = document.getElementById('user-id-display');
+                if (uidDisplay) uidDisplay.innerText = `UID: ${user.uid}`;
+                document.getElementById('sync-status').classList.remove('hidden');
+                loadUserSettings();
+            }
+        });
+
+        async function saveUserSettings(settings) {
+            if (!currentUser) return;
+            try {
+                const settingsRef = doc(db, 'artifacts', appId, 'users', currentUser.uid, 'settings', 'config');
+                await setDoc(settingsRef, { ...settings, updatedAt: Date.now() }, { merge: true });
+            } catch (e) { console.error("Save failed:", e); }
+        }
+
+        async function loadUserSettings() {
+            if (!currentUser) return;
+            try {
+                const settingsRef = doc(db, 'artifacts', appId, 'users', currentUser.uid, 'settings', 'config');
+                const snap = await getDoc(settingsRef);
+                if (snap.exists()) {
+                    const data = snap.data();
+                    if (data.showParking !== undefined) document.getElementById('parking-toggle').checked = data.showParking;
+                    if (data.radius !== undefined) {
+                        currentRadius = Math.min(data.radius, 500);
+                        document.getElementById('radius-label').innerText = currentRadius;
+                        document.getElementById('radius-slider').value = currentRadius;
+                    }
+                    if (data.showParking && currentCoords) findNearbyParking(currentCoords);
+                }
+            } catch (e) { console.error("Load failed:", e); }
+        }
+
+        // 3. 導航與 Google Maps 功能
+        window.openNavigation = (lat, lng, placeId) => {
+            // 自動識別裝置：iOS 使用 apple maps schema, 其他使用 google maps web dir
+            const isiOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
+            let url = `https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}`;
+            if (placeId) url += `&destination_place_id=${placeId}`;
+            window.open(url, '_blank');
+        };
+
+        window.initGoogleMaps = function() {
+            try {
+                const mapElement = document.getElementById("map");
+                if (!mapElement) return;
+
+                map = new google.maps.Map(mapElement, {
+                    center: { lat: 22.6273, lng: 120.3014 },
+                    zoom: 14,
+                    mapTypeControl: false,
+                    streetViewControl: false,
+                    fullscreenControl: false,
+                    gestureHandling: 'greedy',
+                    styles: [{ featureType: "poi.business", elementType: "labels", stylers: [{ visibility: "off" }] }]
+                });
+
+                searchService = new google.maps.places.PlacesService(map);
+                distanceMatrixService = new google.maps.DistanceMatrixService();
+                setupAutocomplete();
+            } catch (err) {
+                document.getElementById('api-error-overlay').classList.remove('hidden');
+            }
+        };
+
+        function setupAutocomplete() {
+            const input = document.getElementById("pac-input");
+            autocomplete = new google.maps.places.Autocomplete(input);
+            autocomplete.bindTo("bounds", map);
+            autocomplete.addListener("place_changed", () => {
+                const place = autocomplete.getPlace();
+                if (!place.geometry || !place.geometry.location) return;
+                currentCoords = place.geometry.location;
+                currentPlaceId = place.place_id;
+                updateMapLocation(currentCoords, place.name);
+                const navBtn = document.getElementById('nav-destination');
+                navBtn.classList.remove('hidden');
+                navBtn.onclick = () => openNavigation(currentCoords.lat(), currentCoords.lng(), currentPlaceId);
+            });
+        }
+
+        function updateMapLocation(coords, title) {
+            currentCoords = coords;
+            map.setCenter(currentCoords);
+            map.setZoom(16);
+            if (destinationMarker) destinationMarker.setMap(null);
+            destinationMarker = new google.maps.Marker({
+                position: currentCoords,
+                map: map,
+                title: title,
+                icon: { path: google.maps.SymbolPath.CIRCLE, scale: 10, fillColor: "#3b82f6", fillOpacity: 1, strokeColor: "white", strokeWeight: 2 }
+            });
+            if (document.getElementById('parking-toggle').checked) findNearbyParking(currentCoords);
+        }
+
+        async function getApproximateLocationByIP() {
+            try {
+                const response = await fetch('https://ipwho.is/');
+                const data = await response.json();
+                if (data && data.success) {
+                    const pos = new google.maps.LatLng(data.latitude, data.longitude);
+                    updateMapLocation(pos, "約略位置 (IP)");
+                    showToast("已取得約略位置 (IP 定位)");
+                }
+            } catch (err) { showToast("定位失敗，請手動搜尋"); }
+        }
+
+        window.handleGeolocation = function() {
+            if (!navigator.geolocation) { showToast("瀏覽器不支援定位"); return; }
+            showToast("正在獲取位置...");
+            navigator.geolocation.getCurrentPosition(
+                (position) => {
+                    const pos = new google.maps.LatLng(position.coords.latitude, position.coords.longitude);
+                    updateMapLocation(pos, "目前位置");
+                    showToast("定位成功");
+                },
+                (error) => {
+                    if (error.code === 1) getApproximateLocationByIP();
+                    else showToast("無法取得 GPS 訊號");
+                },
+                { enableHighAccuracy: false, timeout: 8000, maximumAge: 0 }
+            );
+        };
+
+        function findNearbyParking(location) {
+            if (!searchService) return;
+            clearParkingMarkers();
+            updateListUI(null);
+            const msg = document.getElementById('status-message');
+            msg.classList.remove('hidden');
+            searchService.nearbySearch({ location: location, radius: parseInt(currentRadius), type: 'parking' }, (results, status) => {
+                msg.classList.add('hidden');
+                if (status === google.maps.places.PlacesServiceStatus.OK && results) calculateWalkingTimes(location, results);
+                else { updateListUI([]); if (status === 'ZERO_RESULTS') showToast("範圍內無停車場"); }
+            });
+        }
+
+        function calculateWalkingTimes(origin, results) {
+            const limitedResults = results.slice(0, 15);
+            const destinations = limitedResults.map(r => r.geometry.location);
+            distanceMatrixService.getDistanceMatrix({
+                origins: [origin],
+                destinations: destinations,
+                travelMode: google.maps.TravelMode.WALKING,
+                unitSystem: google.maps.UnitSystem.METRIC,
+            }, (response, status) => {
+                if (status === google.maps.DistanceMatrixStatus.OK) {
+                    const elements = response.rows[0].elements;
+                    const resultsWithTime = limitedResults.map((place, index) => ({ ...place, walkingInfo: elements[index] }));
+                    resultsWithTime.sort((a, b) => a.walkingInfo.distance.value - b.walkingInfo.distance.value);
+                    updateListUI(resultsWithTime);
+                    resultsWithTime.forEach(addParkingMarker);
+                } else {
+                    updateListUI(limitedResults);
+                    limitedResults.forEach(addParkingMarker);
+                }
+            });
+        }
+
+        function updateListUI(results) {
+            const listContainer = document.getElementById('parking-list');
+            const countLabel = document.getElementById('result-count');
+            if (!results) { listContainer.innerHTML = '<div class="p-8 text-center text-gray-400">搜尋中...</div>'; return; }
+            if (results.length === 0) { listContainer.innerHTML = '<div class="p-8 text-center text-gray-400">範圍內無發現</div>'; return; }
+            countLabel.innerText = `找到 ${results.length} 個停車場 (${currentRadius}m)`;
+            listContainer.innerHTML = '';
+            results.forEach(place => {
+                const item = document.createElement('div');
+                item.className = "p-4 hover:bg-blue-50 cursor-pointer transition border-l-4 border-transparent hover:border-blue-500 group relative";
+                const dist = place.walkingInfo ? place.walkingInfo.distance.text : '';
+                const dur = place.walkingInfo ? place.walkingInfo.duration.text : '';
+                item.innerHTML = `
+                    <div class="flex justify-between items-start mb-1">
+                        <h3 class="font-bold text-gray-800 text-sm flex-1 mr-2 truncate">${place.name}</h3>
+                        ${dur ? `<span class="text-[10px] bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full font-bold">步行 ${dur}</span>` : ''}
+                    </div>
+                    <p class="text-xs text-gray-500 mb-2 truncate pr-8">${place.vicinity || '無地址'}</p>
+                    <div class="flex items-center gap-3 text-[10px] text-gray-400">
+                        <span>${dist}</span>
+                        ${place.rating ? `<span class="text-yellow-500">★ ${place.rating}</span>` : ''}
+                    </div>
+                    <button class="absolute right-4 bottom-4 p-2 bg-green-500 text-white rounded-full shadow-sm md:opacity-0 md:group-hover:opacity-100 transition-opacity" onclick="event.stopPropagation(); window.openNavigation(${place.geometry.location.lat()}, ${place.geometry.location.lng()}, '${place.place_id}')">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"></path></svg>
+                    </button>`;
+                item.onclick = () => { map.panTo(place.geometry.location); map.setZoom(18); if(window.innerWidth < 768) document.getElementById('sidebar').classList.remove('open'); };
+                listContainer.appendChild(item);
+            });
+        }
+
+        function addParkingMarker(place) {
+            const marker = new google.maps.Marker({ map: map, position: place.geometry.location, icon: { url: "https://maps.google.com/mapfiles/kml/paddle/P.png", scaledSize: new google.maps.Size(32, 32) } });
+            const info = new google.maps.InfoWindow({ content: `
+                <div class="p-2 font-sans text-sm">
+                    <h3 class="font-bold border-b mb-1">${place.name}</h3>
+                    <p class="text-gray-600 mb-1">${place.vicinity || '無地址'}</p>
+                    <button class="w-full bg-green-500 text-white py-2 rounded text-xs font-bold mt-2" onclick="window.openNavigation(${place.geometry.location.lat()}, ${place.geometry.location.lng()}, '${place.place_id}')">開始導航</button>
+                </div>` 
+            });
+            marker.addListener("click", () => info.open(map, marker));
+            parkingMarkers.push(marker);
+        }
+
+        function clearParkingMarkers() { parkingMarkers.forEach(m => m.setMap(null)); parkingMarkers = []; }
+        function showToast(text) {
+            const msg = document.getElementById('status-message');
+            msg.querySelector('span').innerText = text;
+            msg.classList.remove('hidden');
+            if (!text.includes("中")) setTimeout(() => msg.classList.add('hidden'), 3000);
+        }
+
+        // 4. 事件監聽
+        document.getElementById('parking-toggle').addEventListener('change', (e) => {
+            saveUserSettings({ showParking: e.target.checked });
+            if (e.target.checked && currentCoords) findNearbyParking(currentCoords);
+            else { clearParkingMarkers(); updateListUI([]); }
+        });
+
+        document.getElementById('radius-slider').addEventListener('input', (e) => {
+            currentRadius = e.target.value;
+            document.getElementById('radius-label').innerText = currentRadius;
+        });
+
+        document.getElementById('radius-slider').addEventListener('change', (e) => {
+            saveUserSettings({ radius: e.target.value });
+            if (document.getElementById('parking-toggle').checked && currentCoords) findNearbyParking(currentCoords);
+        });
+
+        document.getElementById('toggle-sidebar').addEventListener('click', () => document.getElementById('sidebar').classList.toggle('open'));
+        document.getElementById('close-sidebar').addEventListener('click', () => document.getElementById('sidebar').classList.remove('open'));
+        document.getElementById('gps-btn').addEventListener('click', () => window.handleGeolocation());
+
+        window.addEventListener('load', async () => {
+            await initAuth();
+            const configRef = doc(db, 'artifacts', appId, 'public', 'data', 'config', 'googleMaps');
+            const configSnap = await getDoc(configRef);
+            apiKey = configSnap.exists() ? configSnap.data().apiKey : FALLBACK_KEY;
+            const script = document.createElement('script');
+            script.setAttribute('crossorigin', 'anonymous');
+            script.src = `https://maps.googleapis.com/maps/api/js?key=${apiKey}&libraries=places&callback=initGoogleMaps`;
+            script.async = true;
+            document.head.appendChild(script);
+        });
+    </script>
+</body>
+</html>
