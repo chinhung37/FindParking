@@ -10,7 +10,7 @@
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="apple-mobile-web-app-title" content="停車助手">
-    <link rel="apple-touch-icon" href="icon.png">
+    <link rel="apple-touch-icon" href="icon-192.png">
     <link rel="manifest" href="manifest.json">
 
     <script src="https://cdn.tailwindcss.com"></script>
@@ -20,7 +20,6 @@
             display: flex; 
             flex-direction: column; 
             overflow: hidden; 
-            /* 避免 iOS 橡皮筋回彈效果 */
             position: fixed;
             width: 100%;
         }
@@ -42,7 +41,6 @@
         .gps-btn {
             transition: all 0.2s ease;
             box-shadow: 0 4px 12px rgba(0,0,0,0.15);
-            /* 考慮到行動端安全區域 */
             bottom: calc(2rem + env(safe-area-inset-bottom));
             right: calc(1.5rem + env(safe-area-inset-right));
         }
@@ -53,7 +51,6 @@
             #sidebar.open { transform: translateX(0); box-shadow: 2px 0 10px rgba(0,0,0,0.1); }
         }
 
-        /* 頂部導覽列考慮 iOS 動態島/瀏海 */
         header {
             padding-top: calc(1rem + env(safe-area-inset-top));
         }
@@ -61,6 +58,7 @@
 </head>
 <body class="bg-gray-100 font-sans text-gray-900">
 
+    <!-- 頂部控制面板 -->
     <header class="bg-white shadow-md p-4 flex flex-col md:flex-row items-center justify-between gap-4 z-50">
         <div class="flex items-center gap-4 w-full md:w-auto">
             <button id="toggle-sidebar" class="p-2 text-gray-600 hover:bg-gray-100 rounded">
@@ -133,8 +131,8 @@
         <div id="api-error-overlay" class="absolute inset-0 bg-white/90 z-[60] flex items-center justify-center hidden text-center">
             <div class="p-8 max-w-sm bg-white rounded-xl shadow-2xl border mx-4">
                 <div class="text-red-500 mb-4"><svg class="w-16 h-16 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg></div>
-                <h2 class="text-xl font-bold text-gray-800 mb-2">服務異常</h2>
-                <p class="text-sm text-gray-600 mb-6">請檢查網路連線或 GPS 定位授權。</p>
+                <h2 class="text-xl font-bold text-gray-800 mb-2">Google Maps 連線異常</h2>
+                <p id="error-details" class="text-sm text-gray-600 mb-6">請檢查 Google Cloud 控制台的 API 金鑰限制是否包含您的 GitHub 網域。</p>
                 <button onclick="location.reload()" class="w-full bg-blue-600 text-white px-6 py-3 rounded-lg font-bold hover:bg-blue-700 transition">重新整理</button>
             </div>
         </div>
@@ -163,10 +161,10 @@
         let currentPlaceId = null;
         let currentRadius = 500; 
 
-        // 1. PWA Service Worker 註冊 (提升行動端穩定性)
+        // 1. PWA Service Worker 註冊
         if ('serviceWorker' in navigator) {
             window.addEventListener('load', () => {
-                navigator.serviceWorker.register('/sw.js').catch(() => {});
+                navigator.serviceWorker.register('./sw.js').catch(() => {});
             });
         }
 
@@ -219,14 +217,13 @@
 
         // 3. 導航與 Google Maps 功能
         window.openNavigation = (lat, lng, placeId) => {
-            // 自動識別裝置：iOS 使用 apple maps schema, 其他使用 google maps web dir
-            const isiOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
             let url = `https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}`;
             if (placeId) url += `&destination_place_id=${placeId}`;
             window.open(url, '_blank');
         };
 
         window.initGoogleMaps = function() {
+            console.log("Google Maps API callback triggered successfully.");
             try {
                 const mapElement = document.getElementById("map");
                 if (!mapElement) return;
@@ -245,8 +242,16 @@
                 distanceMatrixService = new google.maps.DistanceMatrixService();
                 setupAutocomplete();
             } catch (err) {
+                console.error("Map initialization failed:", err);
                 document.getElementById('api-error-overlay').classList.remove('hidden');
             }
+        };
+
+        // 捕捉 API 授權失敗
+        window.gm_authFailure = function() {
+            console.error("Google Maps authentication failed. Check your API Key and Referrer settings.");
+            document.getElementById('api-error-overlay').classList.remove('hidden');
+            document.getElementById('error-details').innerText = "API 金鑰授權失敗。請檢查 Google Cloud Console 是否允許了當前的 GitHub Pages 網域。";
         };
 
         function setupAutocomplete() {
@@ -416,15 +421,28 @@
         document.getElementById('gps-btn').addEventListener('click', () => window.handleGeolocation());
 
         window.addEventListener('load', async () => {
+            console.log("App starting on GitHub Pages...");
             await initAuth();
-            const configRef = doc(db, 'artifacts', appId, 'public', 'data', 'config', 'googleMaps');
-            const configSnap = await getDoc(configRef);
-            apiKey = configSnap.exists() ? configSnap.data().apiKey : FALLBACK_KEY;
-            const script = document.createElement('script');
-            script.setAttribute('crossorigin', 'anonymous');
-            script.src = `https://maps.googleapis.com/maps/api/js?key=${apiKey}&libraries=places&callback=initGoogleMaps`;
-            script.async = true;
-            document.head.appendChild(script);
+            
+            try {
+                const configRef = doc(db, 'artifacts', appId, 'public', 'data', 'config', 'googleMaps');
+                const configSnap = await getDoc(configRef);
+                apiKey = configSnap.exists() ? configSnap.data().apiKey : FALLBACK_KEY;
+                
+                console.log("API Key loaded from Firebase or Fallback.");
+                
+                const script = document.createElement('script');
+                script.setAttribute('crossorigin', 'anonymous');
+                script.src = `https://maps.googleapis.com/maps/api/js?key=${apiKey}&libraries=places&callback=initGoogleMaps`;
+                script.async = true;
+                script.onerror = (e) => {
+                    console.error("Script failed to load:", e);
+                    document.getElementById('api-error-overlay').classList.remove('hidden');
+                };
+                document.head.appendChild(script);
+            } catch (error) {
+                console.error("Critical error during startup:", error);
+            }
         });
     </script>
 </body>
